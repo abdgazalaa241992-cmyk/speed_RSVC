@@ -36,7 +36,7 @@ from sensor_msgs.msg import LaserScan
 import numpy as np
 import math
 
-ROBOT_NAMES = ['tb3']# , 'tb2', 'tb3', 'tb4'
+ROBOT_NAMES = ['tb1', 'tb2', 'tb3', 'tb4']# 
 
 
 class MultiRobotRSVC(Node):
@@ -66,7 +66,7 @@ class MultiRobotRSVC(Node):
 
         # RSVC parameters
         self.robot_radius = 0.11  # TB3 robot radius (meters)
-        self.safety_margin = 0.15  # Additional safety margin
+        self.safety_margin = 0.20  # Additional safety margin
         self.min_sep_distance = self.robot_radius * 2 + self.safety_margin
 
         for name in ROBOT_NAMES:
@@ -97,13 +97,16 @@ class MultiRobotRSVC(Node):
 
         # Goals
         self.goals = {
-            'tb1': np.array([5.0, 5.0]),
-            'tb2': np.array([-2.0, 2.0]),
-            'tb3': np.array([-2.0, -2.0]),
-            'tb4': np.array([2.0, -2.0]),
+            'tb1': np.array([7.0, 7.0]),
+            'tb2': np.array([-7.0, 7.0]),
+            'tb3': np.array([-7.0, -7.0]),
+            'tb4': np.array([7.0, -7.0]),
         }
 
         self.timer = self.create_timer(0.1, self.control_loop)
+        self.timer2 = self.create_timer(1, self.print_loop)
+        self.lx=0.0 
+        self.az=0.0
 
     def odom_callback(self, msg, robot_name):
         x = msg.pose.pose.position.x
@@ -164,7 +167,7 @@ class MultiRobotRSVC(Node):
         obstacles = self.lidar_obstacles[robot_name]
         
         for obs_x, obs_y, obs_dist in obstacles:
-            if obs_dist < 1.0:  # Only consider nearby obstacles
+            if obs_dist < 2.0:  # Only consider nearby obstacles
                 obs_pos = np.array([obs_x, obs_y])
                 rel_pos = obs_pos - pos
                 separation = np.linalg.norm(rel_pos)
@@ -174,19 +177,19 @@ class MultiRobotRSVC(Node):
                     bearing = rel_pos / separation
                     A_rows.append(bearing)
         
-        # Process other robots from odometry
-        for other_name in ROBOT_NAMES:
-            if other_name == robot_name:
-                continue
+        # # Process other robots from odometry
+        # for other_name in ROBOT_NAMES:
+        #     if other_name == robot_name:
+        #         continue
             
-            other_pos = self.positions[other_name]
-            rel_pos = other_pos - pos
-            separation = np.linalg.norm(rel_pos)
+        #     other_pos = self.positions[other_name]
+        #     rel_pos = other_pos - pos
+        #     separation = np.linalg.norm(rel_pos)
             
-            if separation > 0.01 and separation < 2.0:  # Consider robots within 2m
-                # Bearing vector (unit vector from robot to other robot)
-                bearing = rel_pos / separation
-                A_rows.append(bearing)
+        #     if separation > 0.01 and separation < 2.0:  # Consider robots within 2m
+        #         # Bearing vector (unit vector from robot to other robot)
+        #         bearing = rel_pos / separation
+        #         A_rows.append(bearing)
         
         # If no constraints, return desired velocity
         if not A_rows:
@@ -200,8 +203,8 @@ class MultiRobotRSVC(Node):
         
         # Ensure speed limit
         speed = np.linalg.norm(v_safe)
-        if speed > 0.22:  # TB3 max linear speed
-            v_safe = (v_safe / speed) * 0.22
+        if speed > 0.62:  # TB3 max linear speed
+            v_safe = (v_safe / speed) * 0.62
         
         return v_safe
 
@@ -251,7 +254,7 @@ class MultiRobotRSVC(Node):
         # Compute goal-seeking velocity
         v_goal = goal - pos
         dist_to_goal = np.linalg.norm(v_goal)
-
+        dist_to_goal= 1
         if dist_to_goal > 0.1:
             v_goal = (v_goal / dist_to_goal) * 2
         else:
@@ -282,18 +285,18 @@ class MultiRobotRSVC(Node):
 
         # gains for TB3
         k_lin = 0.4
-        k_ang = 1.0
+        k_ang = 2.0
 
         linear_x = k_lin * np.linalg.norm(v)
         angular_z = k_ang * error
 
         # TB3 velocity limits
-        linear_x = min(linear_x, 0.22)
-        angular_z = max(min(angular_z, 1.0), -1.0)
+        linear_x = min(linear_x, 0.62)
+        angular_z = max(min(angular_z, 2.0), -2.0)
 
         # stop forward if turning too much
-        if abs(error) > 0.6:
-            linear_x = 0.0
+        # if abs(error) > 0.6:
+        #     linear_x = 0.0
 
         # low-pass smoothing filter to reduce jitter
         alpha = 0.7
@@ -312,13 +315,19 @@ class MultiRobotRSVC(Node):
         for robot in ROBOT_NAMES:
 
             v = self.compute_velocity(robot)
-            lx, az = self.convert_to_cmd(robot, v)
+            self.lx, self.az = self.convert_to_cmd(robot, v)
 
             msg = TwistStamped()
-            msg.twist.linear.x = float(lx)
-            msg.twist.angular.z = float(az)
+            msg.twist.linear.x = float(self.lx)
+            msg.twist.angular.z = float(self.az)
 
             self.cmd_publishers[robot].publish(msg)
+    def print_loop(self):
+        """Main print loop: """
+        for robot in ROBOT_NAMES:
+           print ("robot:",robot)
+           print ("velocity:",self.lx, self.az)
+           print ("odo:",self.positions[robot],self.yaws[robot])
 
 
 def main():

@@ -35,6 +35,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 import numpy as np
 import math
+import time
 
 ROBOT_NAMES = ['tb1', 'tb2', 'tb3', 'tb4']# 
 
@@ -68,6 +69,12 @@ class MultiRobotRSVC(Node):
         self.robot_radius = 0.11  # TB3 robot radius (meters)
         self.safety_margin = 0.20  # Additional safety margin
         self.min_sep_distance = self.robot_radius * 2 + self.safety_margin
+
+        #deadlock_solve
+        self.deadlock_en=True
+        self.deadlock=False
+        self.deadlock_timer=time.time()
+        self.dis_arrived=0.0
 
         for name in ROBOT_NAMES:
 
@@ -177,20 +184,6 @@ class MultiRobotRSVC(Node):
                     bearing = rel_pos / separation
                     A_rows.append(bearing)
         
-        # # Process other robots from odometry
-        # for other_name in ROBOT_NAMES:
-        #     if other_name == robot_name:
-        #         continue
-            
-        #     other_pos = self.positions[other_name]
-        #     rel_pos = other_pos - pos
-        #     separation = np.linalg.norm(rel_pos)
-            
-        #     if separation > 0.01 and separation < 2.0:  # Consider robots within 2m
-        #         # Bearing vector (unit vector from robot to other robot)
-        #         bearing = rel_pos / separation
-        #         A_rows.append(bearing)
-        
         # If no constraints, return desired velocity
         if not A_rows:
             return desired_velocity
@@ -246,7 +239,7 @@ class MultiRobotRSVC(Node):
         
         return best
 
-    def compute_velocity(self, robot_name):
+    def compute_velocity(self, robot_name,sheft_rotate):
         """Compute desired velocity using goal-seeking with RSVC collision avoidance."""
         pos = self.positions[robot_name]
         goal = self.goals[robot_name]
@@ -254,6 +247,13 @@ class MultiRobotRSVC(Node):
         # Compute goal-seeking velocity
         v_goal = goal - pos
         dist_to_goal = np.linalg.norm(v_goal)
+        self.dis_arrived=dist_to_goal
+        theta=math.atan2(v_goal[1],v_goal[0])
+        #rotate u0
+        u0_R=np.zeros(2)
+        u0_R[0]=dist_to_goal*math.cos(theta+sheft_rotate)
+        u0_R[1]=dist_to_goal*math.sin(theta+sheft_rotate)
+        v_goal=u0_R
         dist_to_goal= 1
         if dist_to_goal > 0.1:
             v_goal = (v_goal / dist_to_goal) * 2
@@ -294,10 +294,6 @@ class MultiRobotRSVC(Node):
         linear_x = min(linear_x, 0.62)
         angular_z = max(min(angular_z, 2.0), -2.0)
 
-        # stop forward if turning too much
-        # if abs(error) > 0.6:
-        #     linear_x = 0.0
-
         # low-pass smoothing filter to reduce jitter
         alpha = 0.7
 
@@ -314,7 +310,34 @@ class MultiRobotRSVC(Node):
         """Main control loop: compute RSVC-based velocities for all robots."""
         for robot in ROBOT_NAMES:
 
-            v = self.compute_velocity(robot)
+            v = self.compute_velocity(robot,0)
+            norm_v=np.linalg.norm(v);
+            
+            if (norm_v < 0.1 and self.dis_arrived > 0.2):
+                self.deadlock = True
+                self.deadlock_timer = time.time()
+            if time.time() - self.deadlock_timer > 0.5:
+                self.deadlock = False
+                # self.deadlock_R = not self.deadlock_R
+
+            if self.deadlock and self.deadlock_en:
+                # print ("robot:",robot)
+                # print ("deadlock_timer:",self.deadlock_timer)
+                # print ("old_v:",v)
+                v_l = self.compute_velocity(robot,math.pi/2)
+                v_R = self.compute_velocity(robot,math.pi/2)
+                
+                # theta_L=math.atan2(v_l[1],v_l[0])
+                # theta_R=math.atan2(v_R[1],v_R[0])
+                # print ("theta_L-self.yaws[robot]:",theta_L-self.yaws[robot])
+                # print ("theta_R-self.yaws[robot]:",theta_R-self.yaws[robot])
+                # if (abs(theta_L-self.yaws[robot])>abs(theta_R-self.yaws[robot])):
+
+                if (np.linalg.norm(v_R)>np.linalg.norm(v_l)):
+                    v=v_R
+                else:
+                    v=v_l
+                # print ("new_v:",v)
             self.lx, self.az = self.convert_to_cmd(robot, v)
 
             msg = TwistStamped()
